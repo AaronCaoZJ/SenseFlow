@@ -1,0 +1,21 @@
+optimizer:
+  beta1: 0.9
+  beta2: 0.999
+  eps: 1.0e-8
+  weight_decay: 0.00
+
+lr_scheduler:
+  target: senseflow.lr_scheduler.LambdaWarmUpConstantScheduler
+  params:
+    warm_up_steps: 500
+    lr_min: 1.0e-6
+    lr_max: 1.0e-6
+    lr_start: 1.0e-6
+    verbosity_interval: 200
+
+train:
+  iter_num: 1000000
+  save_interval: 3000
+  seed: 71801
+  log_interval: 10
+
