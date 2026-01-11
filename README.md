@@ -50,7 +50,7 @@ We provide two methods to set up the environment: using conda with `environment.
 1. Create a new virtual environment (Python 3.10 is required):
    ```bash
    python3.10 -m venv senseflow_env
-   source senseflow_env/bin/activate  # On Windows: senseflow_env\Scripts\activate
+   source senseflow_env/bin/activate
    ```
 
 2. Install PyTorch with CUDA support first (compatible with CUDA 12.4):
