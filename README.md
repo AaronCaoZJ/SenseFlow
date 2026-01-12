@@ -2,6 +2,7 @@
 
 [![arXiv](https://img.shields.io/badge/Arxiv-2506.00523-b31b1b)](https://arxiv.org/abs/2506.00523)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Hugging Face](https://img.shields.io/badge/🤗%20Hugging%20Face-Model-yellow)](https://huggingface.co/domiso/SenseFlow)
 
 [Xingtong Ge](https://xingtongge.github.io/)<sup>1,2</sup>, Xin Zhang<sup>2</sup>, [Tongda Xu](https://tongdaxu.github.io/)<sup>3</sup>, [Yi Zhang](https://zhangyi-3.github.io/)<sup>4</sup>, [Xinjie Zhang](https://xinjie-q.github.io/)<sup>1</sup>, [Yan Wang](https://yanwang202199.github.io/)<sup>3</sup>, [Jun Zhang](https://eejzhang.people.ust.hk/)<sup>1</sup>
 
@@ -11,20 +12,42 @@
 
 
 
-## Abstract
+## 📝 Abstract
 
-The Distribution Matching Distillation (DMD) has been successfully applied to text-to-image diffusion models such as Stable Diffusion (SD) 1.5. However, vanilla DMD suffers from convergence difficulties on large-scale flow-based text-to-image models, such as SD 3.5 and FLUX. In this paper, we first analyze the issues when applying vanilla DMD on large-scale models. Then, to overcome the scalability challenge, we propose implicit distribution alignment (IDA) to regularize the distance between the generator and fake distribution. Furthermore, we propose intra-segment guidance (ISG) to relocate the timestep importance distribution from the teacher model. With IDA alone, DMD converges for SD 3.5; employing both IDA and ISG, DMD converges for SD 3.5 and FLUX.1 dev. Along with other improvements such as scaled up discriminator models, our final model, dubbed **SenseFlow**, achieves superior performance in distillation for both diffusion based text-to-image models such as SDXL, and flow-matching models such as SD 3.5 Large and FLUX. The source code will be released.
+The Distribution Matching Distillation (DMD) has been successfully applied to text-to-image diffusion models such as Stable Diffusion (SD) 1.5. However, vanilla DMD suffers from convergence difficulties on large-scale flow-based text-to-image models, such as SD 3.5 and FLUX. In this paper, we first analyze the issues when applying vanilla DMD on large-scale models. Then, to overcome the scalability challenge, we propose implicit distribution alignment (IDA) to regularize the distance between the generator and fake distribution. Furthermore, we propose intra-segment guidance (ISG) to relocate the timestep importance distribution from the teacher model. With IDA alone, DMD converges for SD 3.5; employing both IDA and ISG, DMD converges for SD 3.5 and FLUX.1 dev. Along with other improvements such as scaled up discriminator models, our final model, dubbed **SenseFlow**, achieves superior performance in distillation for both diffusion based text-to-image models such as SDXL, and flow-matching models such as SD 3.5 Large and FLUX. The source code and model weights are now available.
 
 ![1024 x 1024 examples of our 4-step generator distilled on FLUX.1 dev](assets/Fig1_final.png)
 
-## TODO List
+## ✅ TODO List
 
 - [x] Single-node training scripts
 - [ ] Multi-node training scripts
 - [x] Inference scripts
 - [ ] Open-source model weights
 
-## Installation
+## 🤗 Model Weights
+
+We have open-sourced the **SenseFlow-FLUX** model weights on Hugging Face! 🎉
+
+### 📥 Download SenseFlow-FLUX
+
+The SenseFlow-FLUX model (supports 4-8 step generation) is available at:
+- **Hugging Face Model**: [domiso/SenseFlow](https://huggingface.co/domiso/SenseFlow)
+
+The model includes:
+- `xxx.safetensors`: the DiT checkpoint
+- `config.json`: the config of DiT used in our model
+
+### 🚀 Quick Start with SenseFlow-FLUX
+
+1. Download the base FLUX.1-dev checkpoint to `Path/to/FLUX`
+2. Download SenseFlow-FLUX from Hugging Face and replace the transformer folder:
+   ```bash
+   # Replace Path/to/FLUX/transformer with SenseFlow-FLUX folder
+   ```
+3. Use the model with diffusers (see [Hugging Face model card](https://huggingface.co/domiso/SenseFlow) for detailed usage examples)
+
+## 💻 Installation
 
 We provide two methods to set up the environment: using conda with `environment.yaml` or using pip with `requirements.txt`.
 
@@ -68,7 +91,7 @@ We provide two methods to set up the environment: using conda with `environment.
    pip install -e .
    ```
 
-## Setup
+## ⚙️ Setup
 
 Before training, you need to download the pretrained teacher models and configure the paths in the trainer files.
 
@@ -139,7 +162,7 @@ Before training, you need to download the pretrained teacher models and configur
    - Replace `PLACEHOLDER_FLUX_PATH` with your local path to `FLUX.1-dev`
    - Replace `PLACEHOLDER_FLUX_WO_GUIDANCE_EMBED_PATH` with the absolute path to `exp_flux/flux-wo-guidance-embed`
 
-## Dataset Preparation
+## 📊 Dataset Preparation
 
 ### SDXL Training (DMD2 and SenseFlow)
 
@@ -188,7 +211,7 @@ For SD3.5 and FLUX training, we use text-image datasets with a JSON file format.
 
 3. Ensure image paths in the JSON file are absolute paths or paths relative to where you run the training script.
 
-## Training
+## 🏋️ Training
 
 We provide training scripts in the `exp_*` directories. Each script takes 4 arguments: number of nodes, number of GPUs per node, config file path, and save directory path.
 
@@ -243,7 +266,7 @@ sh exp_sd35/train_SD35_large_senseflow.sh \
 - Third argument: Path to config file
 - Fourth argument: Path to save directory
 
-## Inference
+## 🎨 Inference
 
 We provide inference scripts for different models:
 
@@ -311,7 +334,7 @@ For SDXL:
 For SD35:
 - `--transformer_config`: Path to transformer config file (default: `<sd35_ckpt>/transformer/config.json`)
 
-## Results
+## 📈 Results
 
 ### Table 1: Quantitative Results on COCO-5K Dataset
 
@@ -358,7 +381,7 @@ For SD35:
 ### 1024 x 1024 examples of our 4-step generator distilled on SDXL
 <img src="assets/fig_supp_sdxl.png" style="zoom:50%;" />
 
-## Citation
+## 📚 Citation
 
 If you find this work useful, please cite:
 
@@ -371,7 +394,7 @@ If you find this work useful, please cite:
 }
 ```
 
-## License
+## ⚖️ License
 
 This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
 
