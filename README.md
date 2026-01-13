@@ -16,7 +16,7 @@
 
 The Distribution Matching Distillation (DMD) has been successfully applied to text-to-image diffusion models such as Stable Diffusion (SD) 1.5. However, vanilla DMD suffers from convergence difficulties on large-scale flow-based text-to-image models, such as SD 3.5 and FLUX. In this paper, we first analyze the issues when applying vanilla DMD on large-scale models. Then, to overcome the scalability challenge, we propose implicit distribution alignment (IDA) to regularize the distance between the generator and fake distribution. Furthermore, we propose intra-segment guidance (ISG) to relocate the timestep importance distribution from the teacher model. With IDA alone, DMD converges for SD 3.5; employing both IDA and ISG, DMD converges for SD 3.5 and FLUX.1 dev. Along with other improvements such as scaled up discriminator models, our final model, dubbed **SenseFlow**, achieves superior performance in distillation for both diffusion based text-to-image models such as SDXL, and flow-matching models such as SD 3.5 Large and FLUX. The source code and model weights are now available.
 
-![1024 x 1024 examples of our 4-step generator distilled on FLUX.1 dev](assets/Fig1_final.png)
+![1024 x 1024 examples of our 4-step generator distilled on FLUX.1 dev](assets/Fig1_final.jpg)
 
 ## ✅ TODO List
 
@@ -376,10 +376,10 @@ For SD35:
 
 
 ### 1024 x 1024 examples of our 4-step generator distilled on SD 3.5 Large
-<img src="assets/fig_supp_sd35.png" style="zoom:50%;" />
+<img src="assets/fig_supp_sd35.jpg" style="zoom:50%;" />
 
 ### 1024 x 1024 examples of our 4-step generator distilled on SDXL
-<img src="assets/fig_supp_sdxl.png" style="zoom:50%;" />
+<img src="assets/fig_supp_sdxl.jpg" style="zoom:50%;" />
 
 ## 📚 Citation
 
