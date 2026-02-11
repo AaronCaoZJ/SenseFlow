@@ -15,7 +15,16 @@ lr_scheduler:
 
 train:
   iter_num: 1000000
-  save_interval: 3000
+  save_interval: 1000
   seed: 71801
   log_interval: 10
+
+wandb:
+  enabled: true
+  project: "senseflow-sd35"
+  entity: "aaroncaozj_team"   # your wandb entity/team name, null for personal account
+  name: null                  # run name, null for auto-generated
+  mode: "online"              # "online", "offline", or "disabled"
+  wandb_iters: 50             # interval for visual (image) logging
+  log_loss_iters: 15          # interval for scalar loss logging
 

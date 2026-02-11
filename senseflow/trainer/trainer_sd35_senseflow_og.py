@@ -11,10 +11,6 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, DistributedSampler, default_collate
 import torch.distributed as dist
-try:
-    import wandb
-except ImportError:
-    wandb = None
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
     FullStateDictConfig,
@@ -173,9 +169,9 @@ def import_model_class_from_model_name_or_path(
             return T5EncoderModel
         else:
             raise ValueError(f"{model_class} is not supported.")
-        
+
 def predict_noise(dit, noisy_latents, text_embeddings, uncond_embedding, timesteps, 
-    guidance_scale=1.0, pooled_prompt_embeds=None, uncond_pooled_prompt_embeds=None, decoupled=False
+    guidance_scale=1.0, pooled_prompt_embeds=None, uncond_pooled_prompt_embeds=None
 ):
     CFG_GUIDANCE = guidance_scale > 1
 
@@ -187,10 +183,7 @@ def predict_noise(dit, noisy_latents, text_embeddings, uncond_embedding, timeste
 
         noise_pred = dit(model_input, timestep=timesteps, encoder_hidden_states=embeddings, pooled_projections=pooled_embeds).sample
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-        if decoupled:
-            return noise_pred_text, noise_pred_uncond
-        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-
+        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond) 
     else:
         model_input = noisy_latents 
         embeddings = text_embeddings
@@ -261,23 +254,6 @@ class Trainer(object):
 
     def init_logger(self):
         self.log_interval = self.config["train"]["log_interval"]
-        # wandb config from yaml
-        wandb_config = self.config.get("wandb", {})
-        self.use_wandb = wandb_config.get("enabled", False) and wandb is not None
-        self.wandb_iters = wandb_config.get("wandb_iters", 50)  # visual logging interval
-        self.wandb_log_loss_iters = wandb_config.get("log_loss_iters", 15)  # loss logging interval
-        if self.use_wandb and self.rank == 0:
-            wandb.init(
-                project=wandb_config.get("project", "senseflow-sd35"),
-                entity=wandb_config.get("entity", "aaroncaozj_team"),
-                name=wandb_config.get("name", f"sd35-senseflow-{time.strftime('%m%d-%H%M')}"),
-                config=self.config,
-                dir=self.save_path,
-                mode=wandb_config.get("mode", "online"),
-            )
-            print(f"[wandb] initialized: project={wandb_config.get('project')}, name={wandb.run.name}")
-        elif self.rank == 0 and not self.use_wandb:
-            print("[wandb] disabled. Set wandb.enabled=true in config yaml to enable.")
 
     def init_saver(self):
         self.save_interval = self.config["train"]["save_interval"]
@@ -344,18 +320,12 @@ class Trainer(object):
         args.fake_guidance_scale = 1.0
         args.diffusion_gan = True
         args.diffusion_gan_max_timestep = 1000
-        args.use_decoupled_dmd = True
-        args.use_isg = False
 
         self.sdxl_lora = False
         self.disable_sdxl_crossattn = False # True
         self.allin_bf16 = True
         self.laion_crop_size = 1024 # 768 # 512 # 256 # 768 # 1024 # 512
-        self.use_decoupled_dmd = args.use_decoupled_dmd
-        self.use_isg = args.use_isg
         print('laion crop size', self.laion_crop_size, 'all in bf16', self.allin_bf16)
-        print('use Decoupled DMD:', self.use_decoupled_dmd)
-        print('use ISG:', self.use_isg)
         print('sdxl lora', self.sdxl_lora, 'crossatt disable', self.disable_sdxl_crossattn, 'lcm path', args.pretrained_unet_lcm_path)
         if args.pretrained_unet_lcm_path is not None:
             print('using lcm pretraining')
@@ -750,6 +720,7 @@ class Trainer(object):
         self.latent_resolution = 128
         self.network_context_manager = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
         self.ida_w = 0.98
+        self.use_isg = True
 
         rank, world_size = dist.get_rank(), dist.get_world_size()
         current_iter = 0
@@ -793,10 +764,6 @@ class Trainer(object):
                             generator_pred=generated_noise,
                         )
                         print('isg_guidance_loss: ', isg_guidance_loss)
-                    else:
-                        isg_guidance_loss = 0.0
-                        target_x_prev = None
-                        generated_x_prev = None
             else:
                 with torch.no_grad():
                     generated_noise = self.model(
@@ -818,8 +785,7 @@ class Trainer(object):
                     "uncond_embedding": uncond_prompt_embeds,
                     "real_train_dict": None,
                     "pooled_prompt_embeds": denoising_pooled_prompt_embeds,
-                    "uncond_pooled_prompt_embeds": uncond_pooled_prompt_embeds,
-                    "timesteps": timesteps,  # Pass timesteps for Decoupled DMD
+                    "uncond_pooled_prompt_embeds": uncond_pooled_prompt_embeds
                 }
 
                 # avoid any side effects of gradient accumulation
@@ -872,10 +838,7 @@ class Trainer(object):
 
             generator_loss = 0.0 
             if COMPUTE_GENERATOR_GRADIENT:
-                if self.use_decoupled_dmd:
-                    generator_loss += generator_loss_dict["loss_decoupled"]
-                else:
-                    raise NotImplementedError("Decoupled DMD not enabled")
+                generator_loss += generator_loss_dict["loss_dm"]
                 generator_loss += (timew * l_g_gan).mean()
                 if self.use_isg:
                     generator_loss += 0.5 * isg_guidance_loss
@@ -957,39 +920,7 @@ class Trainer(object):
             if len(iter_time_list) > 100:
                 _ = iter_time_list.pop(0)
 
-            # ==================== wandb loss logging ====================
-            if self.use_wandb and self.rank == 0 and current_iter % self.wandb_log_loss_iters == 0:
-                wandb_loss_dict = {
-                    "loss_fake_mean": guidance_loss_dict['loss_fake_mean'].item(),
-                    "l_g_gan": float(generator_loss_dict['l_g_gan'].detach().cpu()),
-                    "l_d_real": float(d_loss_dict['l_d_real'].detach().cpu()),
-                    "l_d_fake": float(d_loss_dict['l_d_fake'].detach().cpu()),
-                    "out_d_real": float(d_loss_dict['out_d_real'].detach().cpu()),
-                    "out_d_fake": float(d_loss_dict['out_d_fake'].detach().cpu()),
-                    "lr": self.optimizer.param_groups[0]["lr"],
-                    "guidance_lr": self.optimizer_guidance.param_groups[0]["lr"],
-                    "iter_time": iter_time,
-                }
-                if COMPUTE_GENERATOR_GRADIENT:
-                    wandb_loss_dict["generator_loss"] = float(generator_loss) if isinstance(generator_loss, float) else generator_loss.item()
-                    wandb_loss_dict["guidance_loss"] = float(guidance_loss) if isinstance(guidance_loss, float) else guidance_loss.item()
-                    if self.use_decoupled_dmd:
-                        wandb_loss_dict.update({
-                            "loss_decoupled": generator_loss_dict["loss_decoupled"].item(),
-                            "loss_ca": generator_loss_dict["loss_ca"].item(),
-                            "loss_dm": generator_loss_dict["loss_dm"].item(),
-                            "dmtrain_grad": generator_log_dict['dmtrain_grad'].mean().item() if 'dmtrain_grad' in generator_log_dict else 0.0,
-                            "ca_update_norm": generator_log_dict.get('ca_update_norm', 0.0),
-                            "dm_update_norm": generator_log_dict.get('dm_update_norm', 0.0),
-                            "ca_timesteps_mean": generator_log_dict.get('ca_timesteps_mean', 0.0),
-                            "dm_timesteps_mean": generator_log_dict.get('dm_timesteps_mean', 0.0),
-                        })
-                    if self.use_isg:
-                        wandb_loss_dict["isg_guidance_loss"] = float(isg_guidance_loss) if isinstance(isg_guidance_loss, float) else isg_guidance_loss.item()
-                wandb.log(wandb_loss_dict, step=current_iter)
-
-            # ==================== image logging (local + wandb) ====================
-            visual = (current_iter % self.wandb_iters == 0) if self.use_wandb else False
+            # save tensors
             self.image_logger_save_dir = self.save_path
             if current_iter % 15 == 0 and self.rank == 0:
                 with torch.no_grad():
@@ -998,23 +929,21 @@ class Trainer(object):
                     model_pred_img = self.differentiable_decode_first_stage(generated_image.float())
                     clean_img = self.differentiable_decode_first_stage(clean_image.float())
                     x_start_img = self.differentiable_decode_first_stage(denoising_dict['image'].float().cuda())
-                    if COMPUTE_GENERATOR_GRADIENT and self.use_decoupled_dmd:
-                        pred_dm_real_cond_image = self.differentiable_decode_first_stage(generator_log_dict['pred_dm_real_cond_image'].float().cuda())
-                        pred_dm_fake_cond_image = self.differentiable_decode_first_stage(generator_log_dict['pred_dm_fake_cond_image'].float().cuda())
-                        pred_ca_real_cond_image = self.differentiable_decode_first_stage(generator_log_dict['pred_ca_real_cond_image'].float().cuda())
-                        pred_ca_real_uncond_image = self.differentiable_decode_first_stage(generator_log_dict['pred_ca_real_uncond_image'].float().cuda())
-                        if self.use_isg and target_x_prev is not None:
+                    if COMPUTE_GENERATOR_GRADIENT:
+                        dmtrain_pred_real_image = self.differentiable_decode_first_stage(generator_log_dict['dmtrain_pred_real_image'].float().cuda())
+                        dmtrain_pred_fake_image = self.differentiable_decode_first_stage(generator_log_dict['dmtrain_pred_fake_image'].float().cuda())
+                        if self.use_isg:
                             target_x_prev_img = self.differentiable_decode_first_stage(target_x_prev.float().cuda()) #target_x_prev, generated_x_prev
                             generated_x_prev_img = self.differentiable_decode_first_stage(generated_x_prev.float().cuda())
                     faketrain_x0_pred =  self.differentiable_decode_first_stage(guidance_log_dict['faketrain_x0_pred'].float())
                     print(f"save image {denoising_dict['caption'][batchid]}")
-                    if COMPUTE_GENERATOR_GRADIENT and self.use_decoupled_dmd:
+                    if COMPUTE_GENERATOR_GRADIENT:
                         if self.use_isg:
-                            save_model_pred_img , save_clean_img, save_x_start_img, save_pred_dm_real_cond_image, save_pred_dm_fake_cond_image, save_pred_ca_real_cond_image, save_pred_ca_real_uncond_image, save_faketrain_x0_pred, save_target_x_prev_img, save_generated_x_prev_img = \
-                                model_pred_img[[batchid]], clean_img[[batchid]], x_start_img[[batchid]], pred_dm_real_cond_image[[batchid]], pred_dm_fake_cond_image[[batchid]], pred_ca_real_cond_image[[batchid]], pred_ca_real_uncond_image[[batchid]], faketrain_x0_pred[[batchid]], target_x_prev_img[[batchid]], generated_x_prev_img[[batchid]]
+                            save_model_pred_img , save_clean_img, save_x_start_img, save_dmtrain_pred_real_image, save_dmtrain_pred_fake_image, save_faketrain_x0_pred, save_target_x_prev_img, save_generated_x_prev_img = \
+                                model_pred_img[[batchid]], clean_img[[batchid]], x_start_img[[batchid]], dmtrain_pred_real_image[[batchid]], dmtrain_pred_fake_image[[batchid]], faketrain_x0_pred[[batchid]], target_x_prev_img[[batchid]], generated_x_prev_img[[batchid]]
                         else:
-                            save_model_pred_img , save_clean_img, save_x_start_img, save_pred_dm_real_cond_image, save_pred_dm_fake_cond_image, save_pred_ca_real_cond_image, save_pred_ca_real_uncond_image, save_faketrain_x0_pred = \
-                                model_pred_img[[batchid]], clean_img[[batchid]], x_start_img[[batchid]], pred_dm_real_cond_image[[batchid]], pred_dm_fake_cond_image[[batchid]], pred_ca_real_cond_image[[batchid]], pred_ca_real_uncond_image[[batchid]], faketrain_x0_pred[[batchid]]
+                            save_model_pred_img , save_clean_img, save_x_start_img, save_dmtrain_pred_real_image, save_dmtrain_pred_fake_image, save_faketrain_x0_pred = \
+                                model_pred_img[[batchid]], clean_img[[batchid]], x_start_img[[batchid]], dmtrain_pred_real_image[[batchid]], dmtrain_pred_fake_image[[batchid]], faketrain_x0_pred[[batchid]]
 
                     else:
                         save_model_pred_img , save_clean_img, save_x_start_img, save_faketrain_x0_pred = \
@@ -1022,12 +951,12 @@ class Trainer(object):
                     th2np = lambda x: x[batchid].detach().permute(1, 2, 0).cpu().numpy()
                     np2save = lambda x: ((x + 1).clip(0, 2) / 2. * 255).astype(np.uint8)
                     res = []
-                    if COMPUTE_GENERATOR_GRADIENT and self.use_decoupled_dmd:
+                    if COMPUTE_GENERATOR_GRADIENT:
                         if self.use_isg:
-                            for item in [save_model_pred_img, save_clean_img, save_x_start_img, save_pred_dm_real_cond_image, save_pred_dm_fake_cond_image, save_pred_ca_real_cond_image, save_pred_ca_real_uncond_image, save_faketrain_x0_pred, save_target_x_prev_img, save_generated_x_prev_img]:
+                            for item in [save_model_pred_img, save_clean_img, save_x_start_img, save_dmtrain_pred_real_image, save_dmtrain_pred_fake_image, save_faketrain_x0_pred, save_target_x_prev_img, save_generated_x_prev_img]:
                                 res.append(np2save(th2np(item)))
                         else:
-                            for item in [save_model_pred_img, save_clean_img, save_x_start_img, save_pred_dm_real_cond_image, save_pred_dm_fake_cond_image, save_pred_ca_real_cond_image, save_pred_ca_real_uncond_image, save_faketrain_x0_pred]:
+                            for item in [save_model_pred_img, save_clean_img, save_x_start_img, save_dmtrain_pred_real_image, save_dmtrain_pred_fake_image, save_faketrain_x0_pred]:
                                 res.append(np2save(th2np(item)))
                     else:
                         for item in [save_model_pred_img, save_clean_img, save_x_start_img, save_faketrain_x0_pred]:
@@ -1038,126 +967,27 @@ class Trainer(object):
                     res = np.concatenate(res, axis=1)
                     Image.fromarray(res).save(tpath)
 
-                    # ========== wandb visual: log generated images and intermediate results ==========
-                    if visual and self.use_wandb:
-                        wandb_data_dict = {}
-                        # --- generated image (the main output) ---
-                        wandb_data_dict["generated_image"] = wandb.Image(
-                            np2save(th2np(save_model_pred_img)),
-                            caption=denoising_dict['caption'][batchid][:200]
-                        )
-                        # --- clean image (backward simulation x0) ---
-                        wandb_data_dict["clean_image_backward_sim"] = wandb.Image(
-                            np2save(th2np(save_clean_img)),
-                            caption="backward simulation x0"
-                        )
-                        # --- original encoded image ---
-                        wandb_data_dict["original_image"] = wandb.Image(
-                            np2save(th2np(save_x_start_img)),
-                            caption="VAE encoded original"
-                        )
-                        # --- dfake x0 prediction ---
-                        wandb_data_dict["faketrain_x0_pred"] = wandb.Image(
-                            np2save(th2np(save_faketrain_x0_pred)),
-                            caption="dfake x0 prediction"
-                        )
-                        # --- Decoupled DMD intermediate images ---
-                        if COMPUTE_GENERATOR_GRADIENT and self.use_decoupled_dmd:
-                            wandb_data_dict["pred_dm_real_cond_image"] = wandb.Image(
-                                np2save(th2np(save_pred_dm_real_cond_image)),
-                                caption="DM: real model cond pred"
-                            )
-                            wandb_data_dict["pred_dm_fake_cond_image"] = wandb.Image(
-                                np2save(th2np(save_pred_dm_fake_cond_image)),
-                                caption="DM: fake model cond pred"
-                            )
-                            wandb_data_dict["pred_ca_real_cond_image"] = wandb.Image(
-                                np2save(th2np(save_pred_ca_real_cond_image)),
-                                caption="CA: real model cond pred"
-                            )
-                            wandb_data_dict["pred_ca_real_uncond_image"] = wandb.Image(
-                                np2save(th2np(save_pred_ca_real_uncond_image)),
-                                caption="CA: real model uncond pred"
-                            )
-                            # # --- difference map: DM real vs fake ---
-                            # dm_diff = (pred_dm_real_cond_image[[batchid]] - pred_dm_fake_cond_image[[batchid]])
-                            # dm_diff_norm = dm_diff.abs().mean().item()
-                            # dm_diff_vis = (dm_diff - dm_diff.min()) / (dm_diff.max() - dm_diff.min() + 1e-8)
-                            # dm_diff_vis = (dm_diff_vis - 0.5) / 0.5  # normalize to [-1, 1]
-                            # wandb_data_dict["dm_difference_map"] = wandb.Image(
-                            #     np2save(th2np(dm_diff_vis)),
-                            #     caption=f"DM diff norm: {dm_diff_norm:.4f}"
-                            # )
-                            # wandb_data_dict["dm_difference_norm"] = dm_diff_norm
-                            # --- Decoupled DMD loss details ---
-                            wandb_data_dict["loss_decoupled"] = generator_loss_dict["loss_decoupled"].item()
-                            wandb_data_dict["loss_ca"] = generator_loss_dict["loss_ca"].item()
-                            wandb_data_dict["loss_dm"] = generator_loss_dict["loss_dm"].item()
-                            # --- ISG images if available ---
-                            if self.use_isg and target_x_prev is not None:
-                                wandb_data_dict["isg_target_x_prev"] = wandb.Image(
-                                    np2save(th2np(save_target_x_prev_img)),
-                                    caption="ISG: target x_prev"
-                                )
-                                wandb_data_dict["isg_generated_x_prev"] = wandb.Image(
-                                    np2save(th2np(save_generated_x_prev_img)),
-                                    caption="ISG: generator x_prev"
-                                )
-                        # --- denoising timestep ---
-                        wandb_data_dict["denoising_timestep"] = generator_log_dict['denoising_timestep'][0].cpu().item()
-                        # --- the concatenated local image as well ---
-                        wandb_data_dict["image_log_concat"] = wandb.Image(
-                            Image.fromarray(res),
-                            caption=f"iter={current_iter} t={generator_log_dict['denoising_timestep'][0].cpu().item()}"
-                        )
-                        wandb.log(wandb_data_dict, step=current_iter)
-
+            # if current_iter % self.log_interval == 0 and self.rank == 0:
             if current_iter % 15 == 0 and self.rank == 0:
-                if COMPUTE_GENERATOR_GRADIENT and self.use_decoupled_dmd:
-                    if self.use_isg:
-                        print(
-                            "iter {}/{}, generator_loss: {}, loss_decoupled: {}, loss_ca: {}, loss_dm: {}, isg_guidance_loss: {}, dmtrain_grad: {}, guidance_loss: {}, loss_fake_mean: {}, l_g_gan: {}, l_d_real: {}, l_d_fake: {}, lr: {}, guidance_lr: {}, iter time avg: {}, iter time: {}".format(
-                                current_iter,
-                                self.num_total_iters,
-                                generator_loss,
-                                generator_loss_dict["loss_decoupled"].mean(),
-                                generator_loss_dict["loss_ca"].mean(),
-                                generator_loss_dict["loss_dm"].mean(),
-                                isg_guidance_loss,
-                                generator_log_dict['dmtrain_grad'].mean(),
-                                guidance_loss,
-                                guidance_loss_dict["loss_fake_mean"],
-                                float(generator_loss_dict["l_g_gan"].detach().cpu()),
-                                float(d_loss_dict["l_d_real"].detach().cpu()),
-                                float(d_loss_dict["l_d_fake"].detach().cpu()),
-                                self.optimizer.param_groups[0]["lr"],
-                                self.optimizer_guidance.param_groups[0]["lr"],
-                                sum(iter_time_list) / len(iter_time_list),
-                                iter_time,
-                            )
+                if COMPUTE_GENERATOR_GRADIENT:
+                    print(
+                        "iter {}/{}, generator_loss: {}, loss_dm: {}, dmtrain_grad: {}, guidance_loss: {}, loss_fake_mean: {}, l_g_gan: {}, l_d_real: {}, l_d_fake: {}, lr: {}, guidance_lr: {}, iter time avg: {}, iter time: {}".format(
+                            current_iter,
+                            self.num_total_iters,
+                            generator_loss,
+                            generator_loss_dict["loss_dm"].mean(),
+                            generator_log_dict['dmtrain_grad'].mean(),
+                            guidance_loss,
+                            guidance_loss_dict["loss_fake_mean"],
+                            float(generator_loss_dict["l_g_gan"].detach().cpu()),
+                            float(d_loss_dict["l_d_real"].detach().cpu()),
+                            float(d_loss_dict["l_d_fake"].detach().cpu()),
+                            self.optimizer.param_groups[0]["lr"],
+                            self.optimizer_guidance.param_groups[0]["lr"],
+                            sum(iter_time_list) / len(iter_time_list),
+                            iter_time,
                         )
-                    else:
-                        print(
-                            "iter {}/{}, generator_loss: {}, loss_decoupled: {}, loss_ca: {}, loss_dm: {}, dmtrain_grad: {}, guidance_loss: {}, loss_fake_mean: {}, l_g_gan: {}, l_d_real: {}, l_d_fake: {}, lr: {}, guidance_lr: {}, iter time avg: {}, iter time: {}".format(
-                                current_iter,
-                                self.num_total_iters,
-                                generator_loss,
-                                generator_loss_dict["loss_decoupled"].mean(),
-                                generator_loss_dict["loss_ca"].mean(),
-                                generator_loss_dict["loss_dm"].mean(),
-                                generator_log_dict['dmtrain_grad'].mean(),
-                                guidance_loss,
-                                guidance_loss_dict["loss_fake_mean"],
-                                float(generator_loss_dict["l_g_gan"].detach().cpu()),
-                                float(d_loss_dict["l_d_real"].detach().cpu()),
-                                float(d_loss_dict["l_d_fake"].detach().cpu()),
-                                self.optimizer.param_groups[0]["lr"],
-                                self.optimizer_guidance.param_groups[0]["lr"],
-                                sum(iter_time_list) / len(iter_time_list),
-                                iter_time,
-                            )
-                        )
-                    
+                    )
                 else:
                     print(
                         "iter {}/{}, generator_loss: {}, guidance_loss: {}, loss_fake_mean: {}, l_g_gan: {}, l_d_real: {}, l_d_fake: {}, lr: {}, guidance_lr: {}, iter time avg: {}, iter time: {}".format(
@@ -1238,7 +1068,6 @@ class GuidanceModel(nn.Module):
         self.real_guidance_scale = args.real_guidance_scale 
         self.fake_guidance_scale = args.fake_guidance_scale
         self.use_bf16 = True
-        self.use_decoupled_dmd = args.use_decoupled_dmd
         self.network_context_manager = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
 
     def get_sigmas(self, timesteps, n_dim=4, dtype=torch.float32):
@@ -1252,161 +1081,80 @@ class GuidanceModel(nn.Module):
             sigma = sigma.unsqueeze(-1)
         return sigma
     
-    def compute_decoupled_distribution_matching_loss(
+    def compute_distribution_matching_loss(
         self, 
         latents,
         text_embedding,
         uncond_embedding,
         pooled_prompt_embeds,
-        uncond_pooled_prompt_embeds,
-        generator_timesteps=None,
+        uncond_pooled_prompt_embeds
     ):
-        """Decoupled DMD: Separate CA (Classifier-free Alignment) and DM (Distribution Matching)"""
-        pred_generator_image = latents
+        original_latents = latents 
         batch_size = latents.shape[0]
-        
+        self.real_guidance_scale = random.uniform(2,8)
         with torch.no_grad():
-            if generator_timesteps is None:
-                raise ValueError("generator_timesteps must be provided for Decoupled DMD")
-            
-            # Sample CA timesteps: earlier/cleaner than generator timesteps
-            ca_timesteps = torch.zeros(batch_size, device=latents.device, dtype=torch.long)
-            min_timestep = 50  # minimum timestep offset
-            
-            for i in range(batch_size):
-                t = int(generator_timesteps[i].item())
-                if t > min_timestep:
-                    ca_timesteps[i] = torch.randint(0, t - min_timestep, (1,), device=latents.device)
-                else:
-                    ca_timesteps[i] = 0
-            
-            # Sample DM timesteps: uniformly from full range
-            u = compute_density_for_timestep_sampling(
-                weighting_scheme='logit_normal',
-                batch_size=batch_size,
-                logit_mean=0.0,
-                logit_std=1.0,
-                mode_scale=1.29,
+            timesteps = torch.randint(
+                self.min_step, 
+                min(self.max_step+1, self.num_train_timesteps),
+                [batch_size], 
+                device=latents.device,
+                dtype=torch.long
             )
-            indices = (u * self.noise_scheduler.config.num_train_timesteps).long()
-            dm_timesteps = self.noise_scheduler.timesteps[indices].to(device=latents.device)
-            
-            # Get sigmas for both CA and DM
-            ca_sigmas = self.get_sigmas(ca_timesteps, n_dim=latents.ndim, dtype=latents.dtype)
-            dm_sigmas = self.get_sigmas(dm_timesteps, n_dim=latents.ndim, dtype=latents.dtype)
-            
-            # Add independent noise for CA and DM
-            ca_noise = torch.randn_like(latents)
-            dm_noise = torch.randn_like(latents)
-            ca_noisy_latents = (1.0 - ca_sigmas) * latents + ca_sigmas * ca_noise
-            dm_noisy_latents = (1.0 - dm_sigmas) * latents + dm_sigmas * dm_noise
-            
-            ca_current_timesteps = ca_sigmas.squeeze() * self.noise_scheduler.config.num_train_timesteps
-            dm_current_timesteps = dm_sigmas.squeeze() * self.noise_scheduler.config.num_train_timesteps
-            
-            # ===== DM: Fake model prediction (with guidance) =====
-            pred_dm_fake_cond_noise, pred_dm_fake_uncond_noise = predict_noise(
-                self.fake_unet, dm_noisy_latents, text_embedding, uncond_embedding, 
-                dm_current_timesteps, 
-                guidance_scale=self.fake_guidance_scale,
+            current_sigmas = extract_into_tensor(self.sigmas, timesteps, timesteps.shape)
+
+            noise = torch.randn_like(latents)
+            noisy_latents = current_sigmas * noise + (1.0 - current_sigmas) * latents
+            current_timesteps = (
+                    current_sigmas * self.noise_scheduler.config.num_train_timesteps
+                )
+
+            # run at full precision as autocast and no_grad doesn't work well together
+            pred_fake_noise = predict_noise(
+                self.fake_unet, noisy_latents, text_embedding, uncond_embedding, 
+                current_timesteps, guidance_scale=self.fake_guidance_scale,
                 pooled_prompt_embeds=pooled_prompt_embeds,
-                uncond_pooled_prompt_embeds=uncond_pooled_prompt_embeds,
-                decoupled_dmd=True
-            )
-            # pred_dm_fake_noise = pred_dm_fake_uncond_noise + self.fake_guidance_scale * (pred_dm_fake_cond_noise - pred_dm_fake_uncond_noise)
-            # pred_dm_fake_image = (dm_noisy_image - dm_sigmas * pred_dm_fake_noise).to(dm_noisy_image.dtype)
-            pred_dm_fake_cond_image = (dm_noisy_latents - dm_sigmas * pred_dm_fake_cond_noise).to(dm_noisy_latents.dtype)
-            
-            # ===== DM: Real model prediction (with guidance) =====
-            self.real_guidance_scale = random.uniform(2, 8)
+                uncond_pooled_prompt_embeds=uncond_pooled_prompt_embeds
+            )  
+            pred_fake_image = (noisy_latents - current_sigmas * pred_fake_noise).to(noisy_latents.dtype)
+
             if self.use_bf16:
-                pred_dm_real_cond_noise, pred_dm_real_uncond_noise = predict_noise(
-                    self.real_unet, dm_noisy_latents.to(torch.bfloat16), 
-                    text_embedding.to(torch.bfloat16), 
+                pred_real_noise = predict_noise(
+                    self.real_unet, noisy_latents.to(torch.bfloat16), text_embedding.to(torch.bfloat16), 
                     uncond_embedding.to(torch.bfloat16), 
-                    dm_current_timesteps, 
-                    guidance_scale=self.real_guidance_scale,
+                    current_timesteps, guidance_scale=self.real_guidance_scale,
                     pooled_prompt_embeds=pooled_prompt_embeds.to(torch.bfloat16),
-                    uncond_pooled_prompt_embeds=uncond_pooled_prompt_embeds.to(torch.bfloat16),
-                    decoupled_dmd=True
+                    uncond_pooled_prompt_embeds=uncond_pooled_prompt_embeds.to(torch.bfloat16)
                 )
             else:
-                pred_dm_real_cond_noise, pred_dm_real_uncond_noise = predict_noise(
-                    self.real_unet, dm_noisy_latents, text_embedding, uncond_embedding, 
-                    dm_current_timesteps, 
-                    guidance_scale=self.real_guidance_scale,
+                pred_real_noise = predict_noise(
+                    self.real_unet, noisy_latents, text_embedding, uncond_embedding, 
+                    current_timesteps, guidance_scale=self.real_guidance_scale, # self.real_guidance_scale random.uniform(1,5)
                     pooled_prompt_embeds=pooled_prompt_embeds,
-                    uncond_pooled_prompt_embeds=uncond_pooled_prompt_embeds,
-                    decoupled_dmd=True
+                    uncond_pooled_prompt_embeds=uncond_pooled_prompt_embeds
                 )
-            # pred_dm_real_noise = pred_dm_real_uncond_noise + self.real_guidance_scale * (pred_dm_real_cond_noise - pred_dm_real_uncond_noise)
-            pred_dm_real_cond_image = (dm_noisy_latents - dm_sigmas * pred_dm_real_cond_noise).to(dm_noisy_latents.dtype)
-            pred_dm_real_uncond_image = (dm_noisy_latents - dm_sigmas * pred_dm_real_uncond_noise).to(dm_noisy_latents.dtype)
-            # ===== CA: Real model CFG predictions =====
-            if self.use_bf16:
-                pred_ca_real_cond_noise, pred_ca_real_uncond_noise = predict_noise(
-                    self.real_unet, ca_noisy_latents.to(torch.bfloat16), 
-                    text_embedding.to(torch.bfloat16), 
-                    uncond_embedding.to(torch.bfloat16), 
-                    ca_current_timesteps, 
-                    guidance_scale=self.real_guidance_scale,
-                    pooled_prompt_embeds=pooled_prompt_embeds.to(torch.bfloat16),
-                    uncond_pooled_prompt_embeds=uncond_pooled_prompt_embeds.to(torch.bfloat16),
-                    decoupled_dmd=True
-                )
-            else:
-                pred_ca_real_cond_noise, pred_ca_real_uncond_noise = predict_noise(
-                    self.real_unet, ca_noisy_latents, text_embedding, uncond_embedding, 
-                    ca_current_timesteps, 
-                    guidance_scale=self.real_guidance_scale,
-                    pooled_prompt_embeds=pooled_prompt_embeds,
-                    uncond_pooled_prompt_embeds=uncond_pooled_prompt_embeds,
-                    decoupled_dmd=True
-                )
-            
-            pred_ca_real_cond_image = (ca_noisy_latents - ca_sigmas * pred_ca_real_cond_noise).to(ca_noisy_latents.dtype)
-            pred_ca_real_uncond_image = (ca_noisy_latents - ca_sigmas * pred_ca_real_uncond_noise).to(ca_noisy_latents.dtype)
-            
-            # ===== Compute gradients =====
-            # DM gradient
-            dm_update_vector = (self.real_guidance_scale - 1) * (pred_dm_real_cond_noise - pred_dm_fake_cond_noise)
-            dm_norm_factor = (pred_dm_real_cond_noise - pred_dm_fake_cond_noise).abs().mean(dim=[1, 2, 3], keepdim=True)
-            dm_update_vector = dm_update_vector / (dm_norm_factor + 1e-8)
-            
-            # CA gradient (classifier-free alignment)
-            ca_update_vector = (pred_ca_real_cond_noise - pred_ca_real_uncond_noise)
-            ca_norm_factor = (pred_ca_real_cond_noise - pred_ca_real_uncond_noise).abs().mean(dim=[1, 2, 3], keepdim=True)
-            ca_update_vector = ca_update_vector / (ca_norm_factor + 1e-8)
-        
-        # Compute losses
-        loss_dm = 0.5 * F.mse_loss(pred_generator_image.float(), (pred_generator_image - dm_update_vector).detach().float(), reduction="mean")
-        loss_ca = 0.5 * F.mse_loss(pred_generator_image.float(), (pred_generator_image - ca_update_vector).detach().float(), reduction="mean")
-        loss_decoupled = loss_dm + loss_ca
-        
+            pred_real_image = (noisy_latents - current_sigmas * pred_real_noise).to(noisy_latents.dtype)
+
+            p_real = (latents - pred_real_image)
+            p_fake = (latents - pred_fake_image)
+
+            grad = (p_real - p_fake) / torch.abs(p_real).mean(dim=[1, 2, 3], keepdim=True) 
+            grad = torch.nan_to_num(grad)
+
+        loss = 0.5 * F.mse_loss(original_latents.float(), (original_latents-grad).detach().float(), reduction="mean")         
+
         loss_dict = {
-            "loss_decoupled": loss_decoupled,
-            "loss_dm": loss_dm,
-            "loss_ca": loss_ca,
+            "loss_dm": loss 
         }
-        
-        decoupled_log_dict = {
-            "ca_noisy_latents": ca_noisy_latents.detach().float(),
-            "dm_noisy_latents": dm_noisy_latents.detach().float(),
-            "pred_ca_real_cond_image": pred_ca_real_cond_image.detach().float(),
-            "pred_ca_real_uncond_image": pred_ca_real_uncond_image.detach().float(),
-            "pred_dm_real_cond_image": pred_dm_real_cond_image.detach().float(),
-            "pred_dm_fake_cond_image": pred_dm_fake_cond_image.detach().float(),
-            "ca_update_vector": ca_update_vector.detach().float(),
-            "dm_update_vector": dm_update_vector.detach().float(),
-            "ca_norm_factor": ca_norm_factor.detach().float().mean(),  # 记录平均值
-            "dm_norm_factor": dm_norm_factor.detach().float().mean(),  # 记录平均值
-            "ca_update_norm": torch.norm(ca_update_vector).item(),  # 添加更新向量的范数
-            "dm_update_norm": torch.norm(dm_update_vector).item(),  # 添加更新向量的范数
-            "ca_timesteps_mean": ca_timesteps.float().mean().item(),  # CA 时间步平均值
-            "dm_timesteps_mean": dm_timesteps.float().mean().item(),  # DM 时间步平均值
+
+        dm_log_dict = {
+            "dmtrain_noisy_latents": noisy_latents.detach().float(),
+            "dmtrain_pred_real_image": pred_real_image.detach().float(),
+            "dmtrain_pred_fake_image": pred_fake_image.detach().float(),
+            "dmtrain_grad": grad.detach().float(),
+            "dmtrain_gradient_norm": torch.norm(grad).item()
         }
-        
-        return loss_dict, decoupled_log_dict
+
+        return loss_dict, dm_log_dict
     
     def compute_loss_fake(
         self,
@@ -1471,22 +1219,17 @@ class GuidanceModel(nn.Module):
         text_embedding,
         uncond_embedding,
         pooled_prompt_embeds=None,
-        uncond_pooled_prompt_embeds=None,
-        timesteps=None,
+        uncond_pooled_prompt_embeds=None
     ):
         loss_dict = {}
         log_dict = {}
 
         # image.requires_grad_(True)
         # if not self.gan_alone:
-        if self.use_decoupled_dmd:
-            dm_dict, dm_log_dict = self.compute_decoupled_distribution_matching_loss(
-                image, text_embedding, uncond_embedding, 
-                pooled_prompt_embeds, uncond_pooled_prompt_embeds,
-                generator_timesteps=timesteps
-            )
-        else:
-            raise NotImplementedError("Decoupled DMD not enabled")
+        dm_dict, dm_log_dict = self.compute_distribution_matching_loss(
+            image, text_embedding, uncond_embedding, 
+            pooled_prompt_embeds, uncond_pooled_prompt_embeds
+        )
 
         loss_dict.update(dm_dict)
         log_dict.update(dm_log_dict)
@@ -1532,8 +1275,7 @@ class GuidanceModel(nn.Module):
                 text_embedding=generator_data_dict["text_embedding"],
                 uncond_embedding=generator_data_dict["uncond_embedding"],
                 pooled_prompt_embeds=generator_data_dict["pooled_prompt_embeds"],
-                uncond_pooled_prompt_embeds=generator_data_dict["uncond_pooled_prompt_embeds"],
-                timesteps=generator_data_dict.get("timesteps", None)
+                uncond_pooled_prompt_embeds=generator_data_dict["uncond_pooled_prompt_embeds"]
             )
         elif guidance_turn:
             loss_dict, log_dict = self.guidance_forward(
