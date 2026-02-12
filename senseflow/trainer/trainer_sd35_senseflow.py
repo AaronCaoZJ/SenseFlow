@@ -1032,7 +1032,7 @@ class Trainer(object):
             # ==================== image logging (local + wandb) ====================
             visual = (current_iter % self.wandb_iters == 0) if self.use_wandb else False
             self.image_logger_save_dir = self.save_path
-            if current_iter % 20 == 0 and self.rank == 0:
+            if current_iter % self.wandb_iters == 0 and self.rank == 0:
                 with torch.no_grad():
                     print('denoising_dict caption: ', denoising_dict['caption'])
                     batchid = 0
@@ -1153,7 +1153,7 @@ class Trainer(object):
                         )
                         wandb.log(wandb_data_dict, step=current_iter)
 
-            if current_iter % 20 == 0 and self.rank == 0:
+            if current_iter % self.wandb_iters == 0 and self.rank == 0:
                 if COMPUTE_GENERATOR_GRADIENT and self.use_decoupled_dmd:
                     if self.use_isg:
                         print(

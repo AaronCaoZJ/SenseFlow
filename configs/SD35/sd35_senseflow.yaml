@@ -25,6 +25,6 @@ wandb:
   entity: "aaroncaozj_team"   # your wandb entity/team name, null for personal account
   name: "run"                 # run name, null for auto-generated
   mode: "online"              # "online", "offline", or "disabled"
-  wandb_iters: 20             # interval for visual (image) logging
-  log_loss_iters: 10          # interval for scalar loss logging
+  wandb_iters: 60             # interval for visual (image) logging
+  log_loss_iters: 20          # interval for scalar loss logging
 
