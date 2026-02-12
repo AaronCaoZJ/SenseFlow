@@ -81,7 +81,7 @@ Before training, you need to download the pretrained teacher models and configur
    ```
 
 2. Update the path in trainer file:
-   - Open `senseflow/trainer/trainer_sd35_senseflow.py`
+   - Open `senseflow/trainer/trainer_sd35_senseflow(_decoupled).py`
    - Replace `PLACEHOLDER_SD35_MEDIUM_PATH` with your local path to `stable-diffusion-3.5-medium`
 
 ### Dataset Preparation
@@ -125,7 +125,7 @@ For SD3.5 and FLUX training, you need to generate a text-image datasets with a J
    **Important**: The three lists (`keys`, `image_paths`, `prompts`) must have the same length, and each index corresponds to one sample.
 
 3. Update the dataset path in trainer files:
-   - For SD3.5 Medium: Open `senseflow/trainer/trainer_sd35_senseflow.py`
+   - For SD3.5 Medium: Open `senseflow/trainer/trainer_sd35_senseflow(_decoupled).py`
    - For SD3.5 Large: Open `senseflow/trainer/trainer_sd35_large_senseflow.py`
    - For FLUX: Open `senseflow/trainer/trainer_flux_senseflow.py`
    - Replace `PLACEHOLDER_JSON_DATASET_PATH` with your local path to the JSON file
@@ -137,7 +137,7 @@ For SD3.5 and FLUX training, you need to generate a text-image datasets with a J
 For `SDXL`, `FLUX` and `SD3.5 Large` please refer to [README-og.md/Training](README-og.md), for `SD3.5 Medium`:
 
 ```bash
-# This is a Decoupled DMD approach, replaced og trainer_sd35_senseflow
+# This is a Decoupled DMD approach
 work_path=$(dirname $0)
 filename=$(basename $work_path)
 T=$(date +%m%d%H%M)
@@ -146,7 +146,7 @@ PYTHONFAULTHANDLER=True \
 torchrun \
 --nproc_per_node 4 \
 --nnodes 1 \
-main_trainer_sd35_senseflow.py \
+main_trainer_sd35_senseflow_decoupled.py \
    /root/highspeedstorage/model_distill/SenseFlow/configs/SD35/sd35_senseflow.yaml \
    /root/highspeedstorage/model_distill/SenseFlow/exp_sd35/output/$T
 ```
