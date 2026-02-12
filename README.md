@@ -137,6 +137,7 @@ For SD3.5 and FLUX training, you need to generate a text-image datasets with a J
 For `SDXL`, `FLUX` and `SD3.5 Large` please refer to [README-og.md/Training](README-og.md), for `SD3.5 Medium`:
 
 ```bash
+# This is a Decoupled DMD approach, replaced og trainer_sd35_senseflow
 work_path=$(dirname $0)
 filename=$(basename $work_path)
 T=$(date +%m%d%H%M)
