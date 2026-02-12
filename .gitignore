@@ -64,3 +64,7 @@ Thumbs.db
 dmypy.json
 .pyre/
 .pytype/
+
+ckpt/
+dataset/
+exp_sd35/output/

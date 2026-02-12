@@ -15,6 +15,9 @@ from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 from .vfmgan_utils import make_vit_backbone, forward_vit
 from .diffaug import DiffAugment
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from ldm.modules.diffusionmodules.util import checkpoint
 from torch_utils.ops import bias_act
 

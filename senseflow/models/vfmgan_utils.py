@@ -31,6 +31,9 @@ from typing import Callable
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from ldm.modules.diffusionmodules.util import checkpoint
 
 
@@ -112,7 +115,7 @@ def forward_flex(self, x: torch.Tensor, in_check=False) -> torch.Tensor:
     x = self.pos_drop(x)
     
     for blk in self.blocks:
-        x = checkpoint(blk, (x,), None, in_check)
+        x = checkpoint(blk, (x,), (), in_check)
 
     x = self.norm(x)
     return x
