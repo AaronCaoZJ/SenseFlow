@@ -1420,16 +1420,16 @@ class GuidanceModel(nn.Module):
             pred_ca_real_uncond_image = (ca_noisy_latents - ca_sigmas * pred_ca_real_uncond_noise).to(ca_noisy_latents.dtype)
             
             # ===== Compute gradients =====
+            # CA gradient (classifier-free alignment)
+            ca_update_vector = (self.real_guidance_scale - 1) * (pred_ca_real_cond_image - pred_ca_real_uncond_image)
+            ca_norm_factor = (pred_ca_real_cond_image - pred_ca_real_uncond_image).abs().mean(dim=[1, 2, 3], keepdim=True)
+            ca_update_vector = ca_update_vector / (ca_norm_factor + 1e-8)
+
             # DM gradient
-            dm_update_vector = (self.real_guidance_scale - 1) * (pred_dm_real_cond_noise - pred_dm_fake_cond_noise)
-            dm_norm_factor = (pred_dm_real_cond_noise - pred_dm_fake_cond_noise).abs().mean(dim=[1, 2, 3], keepdim=True)
+            dm_update_vector = (pred_dm_real_cond_image - pred_dm_fake_cond_image)
+            dm_norm_factor = (pred_dm_real_cond_image - pred_dm_fake_cond_image).abs().mean(dim=[1, 2, 3], keepdim=True)
             dm_update_vector = dm_update_vector / (dm_norm_factor + 1e-8)
             
-            # CA gradient (classifier-free alignment)
-            ca_update_vector = (pred_ca_real_cond_noise - pred_ca_real_uncond_noise)
-            ca_norm_factor = (pred_ca_real_cond_noise - pred_ca_real_uncond_noise).abs().mean(dim=[1, 2, 3], keepdim=True)
-            ca_update_vector = ca_update_vector / (ca_norm_factor + 1e-8)
-        
         # Compute losses
         loss_dm = 0.5 * F.mse_loss(pred_generator_image.float(), (pred_generator_image - dm_update_vector).detach().float(), reduction="mean")
         loss_ca = 0.5 * F.mse_loss(pred_generator_image.float(), (pred_generator_image - ca_update_vector).detach().float(), reduction="mean")
